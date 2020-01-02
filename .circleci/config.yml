@@ -1,0 +1,27 @@
+# Python CircleCI 2.0 configuration file
+#
+# Check https://circleci.com/docs/2.0/language-python/ for more details
+#
+version: 2
+jobs:
+  build:
+    docker:
+      - image: circleci/python:3.6.1
+
+    steps:
+      - checkout
+
+      - run:
+          name: 'Setup Virtual Env'
+          command: |
+            sudo -H pip install --upgrade virtualenv
+            virtualenv -p python3 ~/.virtualenvs/target-typo-proxy
+            source ~/.virtualenvs/target-typo-proxy/bin/activate
+            pip install .
+
+      - run:
+          name: 'Unit Tests'
+          command: |
+            source ~/.virtualenvs/target-typo-proxy/bin/activate
+            python -m unittest
+
