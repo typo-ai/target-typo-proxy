@@ -146,7 +146,7 @@ class TargetTypoProxy():
         if self.output_subprocesses[target_name] is None:
             # Start subprocess if not yet started
             self.output_subprocesses[target_name] = subprocess.Popen(
-                shlex.split(self.output_targets[target_name], IS_POSIX),
+                shlex.split(self.output_targets[target_name], posix=IS_POSIX),
                 shell=False,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
