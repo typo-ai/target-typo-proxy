@@ -1,3 +1,6 @@
+'''
+TargetTypoProxy class handling all core functionality
+'''
 # Copyright 2019 Typo. All Rights Reserved.
 #
 #
@@ -36,13 +39,15 @@
 import sys
 import json
 from queue import Queue, Empty
-import requests
 import shlex
 import subprocess
 from threading import Thread
 from urllib.parse import urlparse
 
+import requests
 import singer
+
+from target_typo_proxy.logging import log_info
 
 # Singer Logger
 logger = singer.get_logger()
@@ -68,19 +73,19 @@ class TargetTypoProxy():
     '''
     TypoTargetProxy Module Constructor
     '''
-    def __init__(self, api_key, api_secret, cluster_api_endpoint, repository,
-                 send_threshold, errors_target, valid_target, passthrough_target):
-        logger.debug('__init__ - self=[%s], api_key=[%s], api_secret=[%s], cluster_api_endpoint=[%s],\
-                     repository=[%s], send_threshold=[%s]',
-                     self, api_key, api_secret, cluster_api_endpoint, repository, send_threshold)
+    # pylint: disable=too-many-instance-attributes
 
-        endpoint_url_parts = urlparse(cluster_api_endpoint)
+    def __init__(self, config):
+        self.config = config
 
-        self.base_url = cluster_api_endpoint
+        self.api_key = config['api_key']
+        self.api_secret = config['api_secret']
+
+        self.base_url = config['cluster_api_endpoint']
+        endpoint_url_parts = urlparse(self.base_url)
         self.cluster_url = '{}://{}'.format(endpoint_url_parts.scheme, endpoint_url_parts.netloc)
-        self.api_key = api_key
-        self.api_secret = api_secret
-        self.repository = repository
+        self.repository = config['repository']
+
         self.retry_bool = False
         self.token = ''
         self.data_out = []
@@ -88,18 +93,25 @@ class TargetTypoProxy():
         self.terminating_subprocesses = False
         self.current_dataset = None
 
-        self.send_threshold = int(send_threshold)
+        self.send_threshold = int(config['send_threshold'])
 
         def is_none_or_empty(val):
             return val is None or val == ''
 
-        if is_none_or_empty(errors_target) and is_none_or_empty(valid_target) and is_none_or_empty(passthrough_target):
-            raise Exception("You must specify at least an errors_target, valid_target or passthrough_target through configuration.")
+        errors_target = config.get('errors_target', None)
+        valid_target = config.get('valid_target', None)
+        passthrough_target = config.get('passthrough_target', None)
+
+        if (is_none_or_empty(errors_target) and is_none_or_empty(valid_target)
+                and is_none_or_empty(passthrough_target)):
+
+            raise Exception('You must specify at least an errors_target, valid_target or passthrough_target ' +
+                            'through configuration.')
 
         self.output_targets = {
-            ERROR: errors_target,
-            VALID: valid_target,
-            PASSTHROUGH: passthrough_target
+            ERROR: config.get('errors_target', None),
+            VALID: config.get('valid_target', None),
+            PASSTHROUGH: config.get('passthrough_target', None)
         }
 
         self.output_subprocesses = {
@@ -121,6 +133,9 @@ class TargetTypoProxy():
         }
 
     def output_to_subprocess_target(self, target_name, data):
+        '''
+        Outputs messages to the indicated subprocess target
+        '''
         if self.terminating_subprocesses:
             # Don't output any more data if a subprocess has terminated
             return
@@ -158,11 +173,17 @@ class TargetTypoProxy():
             self.subprocess_error_exit(target_name)
 
     def output_to_all_targets(self, data):
+        '''
+        Outputs a message to all available targets
+        '''
         for target_name in TARGETS:
             if self.output_targets[target_name]:
                 self.output_to_subprocess_target(target_name, data)
 
     def terminate_subprocess(self, target_name):
+        '''
+        Terminates or kills a subprocess
+        '''
         # When a subprocess fails, the other subprocesses must be terminated
         if self.output_subprocesses[target_name].poll() is None:
             self.output_subprocesses[target_name].stdin.close()
@@ -183,6 +204,9 @@ class TargetTypoProxy():
                         pass
 
     def terminate_subprocesses(self):
+        '''
+        Terminates or kills all subprocesses
+        '''
         if self.terminating_subprocesses:
             return
 
@@ -193,27 +217,26 @@ class TargetTypoProxy():
                 self.terminate_subprocess(target_name)
 
     def subprocess_error_exit(self, target_name):
+        '''
+        A subprocess has exited generating a BrokenPipeError
+        '''
         self.terminate_subprocesses()
         error_output = 'An error occurred in target "{}":\n'.format(
             self.output_targets[target_name])
 
         # Get errors from subprocess STDOUT
         if self.stderr_monitoring_queues[target_name]:
-            a = 0
-
             while True:
                 try:
                     error_output += self.stderr_monitoring_queues[target_name].get_nowait()
                 except Empty:
                     break
 
-                a += 1
-
         error_output += 'Terminating target-typo-proxy'
         logger.error(error_output)
 
         # Exit with error
-        exit(1)
+        sys.exit(1)
 
     def post_request(self, url, headers, payload):
         '''
@@ -224,23 +247,24 @@ class TargetTypoProxy():
                      self, url, headers, payload)
 
         try:
-            r = requests.post(url, headers=headers, data=json.dumps(payload))
-            logger.debug('post_request - r.text=[%s], data=[%s]', r.text, json.dumps(payload))
+            response = requests.post(url, headers=headers, data=json.dumps(payload))
+            logger.debug('post_request - r.text=[%s], data=[%s]', response.text, json.dumps(payload))
+
         except Exception as e:
             logger.error('post_request - Request failed.')
             logger.error(e)
             sys.exit(1)
 
-        logger.debug('post_request - url=[%s], request.status_code=[%s]', url, r.status_code)
-        status = r.status_code
+        logger.debug('post_request - url=[%s], request.status_code=[%s]', url, response.status_code)
+        status = response.status_code
         if status == 200:
-            data = r.json()
+            data = response.json()
             return status, data
         else:
             logger.error('post_request - url=[%s], request.status_code=[%s], response.text=[%s]',
-                         url, r.status_code, r.text)
+                         url, response.status_code, response.text)
             raise Exception('url {} returned status code {}. Please \
-                            check that you are using the correct url.'.format(url, r.status_code))
+                            check that you are using the correct url.'.format(url, response.status_code))
 
     def request_token(self):
         '''
@@ -252,7 +276,6 @@ class TargetTypoProxy():
         url = self.base_url.rstrip('/') + '/token'
         headers = {
             'Content-Type': 'application/json'
-            # ,'Authorization': 'Bearer {}'.format(self.access_token)
         }
         payload = {
             'apikey': self.api_key,
@@ -263,15 +286,12 @@ class TargetTypoProxy():
         try:
             status, data = self.post_request(url, headers, payload)
         except Exception:
-            logger.error('request_token - Please validate your configuration inputs.',
-                         exc_info=True)
+            logger.error('request_token - Please validate your configuration inputs.', exc_info=True)
             sys.exit(1)
 
         # Check Status
         if status != 200:
-            logger.error(
-                'request_token - Token Request Failed. Please check your credentials. Details: \
-                {}'.format(data))
+            logger.error('request_token - Token Request Failed. Please check your credentials. Details: {}'.format(data))
             sys.exit(1)
 
         return data['token']
@@ -280,9 +300,6 @@ class TargetTypoProxy():
         '''
         Constructing record data payload for POST Request
         '''
-        logger.debug('queue_for_processing - self=[%s], dataset=[%s], line=[%s]',
-                     self, dataset, line)
-
         data = {
             'typo_data': {
                 'apikey': self.repository,
@@ -317,6 +334,8 @@ class TargetTypoProxy():
 
         batch = self.data_out
         self.data_out = []
+
+        log_info('Sending %s records to Typo', len(batch))
 
         # Required parameters
         url = self.cluster_url + '/predict-batch'

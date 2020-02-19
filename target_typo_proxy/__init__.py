@@ -1,4 +1,7 @@
-# Copyright 2019 Typo. All Rights Reserved.
+'''
+target-typo-proxy main module
+'''
+# Copyright 2019-2020 Typo. All Rights Reserved.
 #
 #
 #
@@ -47,6 +50,7 @@ import pkg_resources
 from jsonschema.validators import Draft4Validator
 import singer
 
+from target_typo_proxy.logging import log_error, log_info
 from target_typo_proxy.typo import TargetTypoProxy
 
 
@@ -60,14 +64,6 @@ TYPE_STATE = 'STATE'
 TYPE_SCHEMA = 'SCHEMA'
 
 
-def emit_state(state, typo):
-    logger.debug('emit_state - state=[%s]', state)
-
-    if state is not None:
-        logger.debug('emit_stat - Emitting state %s', json.dumps(state))
-        sys.stdout.write('{}\n'.format(singer.format_message(singer.StateMessage(value=state))))
-        sys.stdout.flush()
-
 def flatten(data_json, parent_key='', sep='__'):
     '''
     Flattening JSON nested file
@@ -80,8 +76,7 @@ def flatten(data_json, parent_key='', sep='__'):
         if isinstance(json_value, collections.MutableMapping):
             items.extend(flatten(json_value, new_key, sep=sep).items())
         else:
-            items.append((new_key, str(json_value) if type(
-                json_value) is list else json_value))
+            items.append((new_key, str(json_value) if isinstance(json_value, list) else json_value))
     return dict(items)
 
 
@@ -94,25 +89,16 @@ def process_lines(config, records):
     proxied_key_properties = []
     processed_streams = set()
 
-    now = datetime.now().strftime('%Y%m%dT%H%M%S')  # noqa
-
     def get_config_val(config, key):
         val = config.get(key)
-        if type(val) == str:
+
+        if isinstance(val, str):
             return val.strip()
+
         return val
 
     # Typo Proxy Class
-    typo = TargetTypoProxy(
-        api_key=config['api_key'],
-        api_secret=config['api_secret'],
-        cluster_api_endpoint=config['cluster_api_endpoint'],
-        repository=config['repository'],
-        send_threshold=config['send_threshold'],
-        errors_target=get_config_val(config, 'errors_target'),
-        valid_target=get_config_val(config, 'valid_target'),
-        passthrough_target=get_config_val(config, 'passthrough_target')
-    )
+    typo = TargetTypoProxy(config)
 
     typo.token = typo.request_token()
 
@@ -133,8 +119,7 @@ def process_lines(config, records):
             # Validate record
             if input_record['stream'] in validators:
                 try:
-                    validators[input_record['stream']].validate(
-                        input_record['record'])
+                    validators[input_record['stream']].validate(input_record['record'])
                 except Exception as err:
                     logger.error(err)
                     sys.exit(1)
@@ -187,6 +172,7 @@ def process_lines(config, records):
             # Validate schema
             try:
                 schemas[stream] = input_record['schema']
+
             except Exception:
                 logger.error('Tap error: Schema is missing.')
                 sys.exit(1)
@@ -207,15 +193,16 @@ def process_lines(config, records):
     if len(typo.data_out) != 0:
         typo.process_batch()
 
-    logger.info(
-        'Target Typo Proxy processing completed. {} records proxied.'.format(
-            len(proxied_key_properties)))
+    log_info('Target Typo Proxy processing completed. %s total records proxied.', len(proxied_key_properties))
     state['typo_proxied_records'] = proxied_key_properties
-    emit_state(state, typo)
 
 
 def send_usage_stats():
+    '''
+    Sends usage stats to Singer.io
+    '''
     logger.debug('send_usage_stats')
+
     try:
         version = pkg_resources.get_distribution('target-typo-proxy').version
         conn = http.client.HTTPConnection('collector.singer.io', timeout=10)
@@ -229,17 +216,19 @@ def send_usage_stats():
         }
         conn.request('GET', '/i?' + urllib.parse.urlencode(params))
         conn.getresponse()
+
     except Exception:
         logger.debug('Collection request failed', exc_info=True)
+
     finally:
         if conn:
             conn.close()
 
 
 def validate_config(config, config_loc):
-    logger.debug('validate_config - config=[%s], config_loc=[%s]', config, config_loc)
-    logger.info('Input Configuration Parameters: {}'.format(config))
-
+    '''
+    Validates the provided configuration file
+    '''
     missing_parameters = []
 
     if 'api_key' not in config:
@@ -259,8 +248,8 @@ def validate_config(config, config_loc):
 
     if 'errors_target' not in config and 'valid_target' not in config:
         logger.error('Please provide at least an error or valid target on the'
-                     'configuration file "{0}" by adding errors_target and/or '
-                     'valid_target parameters.'.format(config_loc))
+                     'configuration file "%s" by adding errors_target and/or '
+                     'valid_target parameters.', config_loc)
         return False
 
     # Output error message if there are missing parameters
