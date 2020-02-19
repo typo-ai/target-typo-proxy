@@ -36,11 +36,12 @@ TargetTypoProxy class handling all core functionality
 # or by Typo (https://www.typo.ai/).
 
 
-import sys
 import json
+import os
 from queue import Queue, Empty
 import shlex
 import subprocess
+import sys
 from threading import Thread
 from urllib.parse import urlparse
 
@@ -57,6 +58,8 @@ PASSTHROUGH = 'PASSTHROUGH'
 VALID = 'VALID'
 
 TARGETS = [PASSTHROUGH, ERROR, VALID]
+
+IS_POSIX = os.name == 'posix'
 
 
 def enqueue_output(out, queue):
@@ -143,7 +146,7 @@ class TargetTypoProxy():
         if self.output_subprocesses[target_name] is None:
             # Start subprocess if not yet started
             self.output_subprocesses[target_name] = subprocess.Popen(
-                shlex.split(self.output_targets[target_name]),
+                shlex.split(self.output_targets[target_name], IS_POSIX),
                 shell=False,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
@@ -168,6 +171,7 @@ class TargetTypoProxy():
             self.output_subprocesses[target_name].stdin.write((data).encode('utf-8'))
             # Prevent subprocess input buffering
             self.output_subprocesses[target_name].stdin.flush()
+
         except BrokenPipeError:
             # Subprocess has exited unexpectedly
             self.subprocess_error_exit(target_name)
