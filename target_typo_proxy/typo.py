@@ -48,7 +48,7 @@ from urllib.parse import urlparse
 import requests
 import singer
 
-from target_typo_proxy.logging import log_info
+from target_typo_proxy.logging import log_debug, log_error, log_info
 
 # Singer Logger
 logger = singer.get_logger()
@@ -97,6 +97,7 @@ class TargetTypoProxy():
         self.current_dataset = None
 
         self.send_threshold = int(config['send_threshold'])
+        self.batch_number = 0
 
         def is_none_or_empty(val):
             return val is None or val == ''
@@ -145,6 +146,7 @@ class TargetTypoProxy():
 
         if self.output_subprocesses[target_name] is None:
             # Start subprocess if not yet started
+            log_info('Starting %s target subprocess: "%s"', target_name, self.output_targets[target_name])
             self.output_subprocesses[target_name] = subprocess.Popen(
                 shlex.split(self.output_targets[target_name], posix=IS_POSIX),
                 shell=False,
@@ -261,14 +263,15 @@ class TargetTypoProxy():
 
         logger.debug('post_request - url=[%s], request.status_code=[%s]', url, response.status_code)
         status = response.status_code
+
         if status == 200:
             data = response.json()
             return status, data
-        else:
-            logger.error('post_request - url=[%s], request.status_code=[%s], response.text=[%s]',
-                         url, response.status_code, response.text)
-            raise Exception('url {} returned status code {}. Please \
-                            check that you are using the correct url.'.format(url, response.status_code))
+
+        logger.error('post_request - url=[%s], request.status_code=[%s], response.text=[%s]',
+                     url, response.status_code, response.text)
+        raise Exception('url {} returned status code {}. Please \
+                        check that you are using the correct url.'.format(url, response.status_code))
 
     def request_token(self):
         '''
@@ -290,12 +293,12 @@ class TargetTypoProxy():
         try:
             status, data = self.post_request(url, headers, payload)
         except Exception:
-            logger.error('request_token - Please validate your configuration inputs.', exc_info=True)
+            log_error('Please validate your configuration inputs.', exc_info=True)
             sys.exit(1)
 
         # Check Status
         if status != 200:
-            logger.error('request_token - Token Request Failed. Please check your credentials. Details: {}'.format(data))
+            log_error('Token Request Failed. Please check your credentials. Details: %s', data)
             sys.exit(1)
 
         return data['token']
@@ -336,10 +339,12 @@ class TargetTypoProxy():
         if len(self.data_out) == 0:
             return
 
+        self.batch_number += 1
+
         batch = self.data_out
         self.data_out = []
 
-        log_info('Sending %s records to Typo', len(batch))
+        log_info('Batch %s: Sending %s records to Typo.', self.batch_number, len(batch))
 
         # Required parameters
         url = self.cluster_url + '/predict-batch'
@@ -354,12 +359,11 @@ class TargetTypoProxy():
             'data': [record['typo_data']['data'] for record in batch]
         }
 
-        logger.debug('process_batch - POST records: {}'.format(batch))
         status, data = self.post_request(url, headers, post_data)
 
         # Expired token
         if status == 401:
-            logger.debug('process_data - Token expired. Requesting new token.')
+            log_debug('Token expired. Requesting new token.')
             self.token = self.request_token()
 
             # Retry post_request with new token
@@ -368,16 +372,24 @@ class TargetTypoProxy():
         # Check Status
         good_status = [200, 201, 202]
         if status not in good_status:
-            logger.error(
-                'process_data - Request failed. Please try again later. {}\
-                    '.format(data['message']))
+            log_error('Request failed. Please try again later. %s', data['message'])
             sys.exit(1)
+
+        errors_count = 0
+        valid_count = 0
 
         for index, result in enumerate(data['data']):
             if self.output_targets[PASSTHROUGH]:
                 self.output_to_subprocess_target(PASSTHROUGH, batch[index]['original_record'])
 
-            if result['status'] == 'OK' and self.output_targets[VALID]:
-                self.output_to_subprocess_target(VALID, batch[index]['original_record'])
-            elif self.output_targets[ERROR]:
-                self.output_to_subprocess_target(ERROR, batch[index]['original_record'])
+            if result['status'] == 'OK':
+                valid_count += 1
+                if self.output_targets[VALID]:
+                    self.output_to_subprocess_target(VALID, batch[index]['original_record'])
+            else:
+                errors_count += 1
+                if self.output_targets[ERROR]:
+                    self.output_to_subprocess_target(ERROR, batch[index]['original_record'])
+
+        log_info('Batch %s: Detected %s error records and %s valid records.',
+                 self.batch_number, errors_count, valid_count)

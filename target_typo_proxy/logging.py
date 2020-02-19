@@ -54,11 +54,11 @@ def format_log_message(message, new_line):
     )
 
 
-def log_info(message, *args, exc_info=False, new_line=False, **kwargs):
+def log_debug(message, *args, exc_info=False, new_line=False, **kwargs):
     '''
-    Logs an info message
+    Logs a debug message
     '''
-    LOGGER.info(format_log_message(message, new_line), exc_info=exc_info, *args, **kwargs)
+    LOGGER.debug(format_log_message(message, new_line), exc_info=exc_info, *args, **kwargs)
 
 
 def log_error(message, *args, exc_info=False, new_line=False, **kwargs):
@@ -66,6 +66,13 @@ def log_error(message, *args, exc_info=False, new_line=False, **kwargs):
     Logs a normal error
     '''
     LOGGER.error(format_log_message(message, new_line), exc_info=exc_info, *args, **kwargs)
+
+
+def log_info(message, *args, exc_info=False, new_line=False, **kwargs):
+    '''
+    Logs an info message
+    '''
+    LOGGER.info(format_log_message(message, new_line), exc_info=exc_info, *args, **kwargs)
 
 
 def log_critical(message, *args, exc_info=False, new_line=False, **kwargs):

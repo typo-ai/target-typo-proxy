@@ -43,6 +43,7 @@ import sys
 import json
 import threading
 import http.client
+import numbers
 import urllib
 from datetime import datetime
 import collections
@@ -245,25 +246,39 @@ def validate_config(config, config_loc):
 
     if 'send_threshold' not in config:
         missing_parameters.append('send_threshold')
+    else:
+        if not isinstance(config['send_threshold'], numbers.Number):
+            log_error('Configuration file parameter "send_threshold" must be a number')
+            return False
+
+        if config['send_threshold'] < 0:
+            log_error('Configuration file parameter "send_threshold" must be a number')
+            return False
+
+        if config['send_threshold'] > 100:
+            log_error('Configuration file parameter "send_threshold" must be lower than 100')
+            return False
 
     if 'errors_target' not in config and 'valid_target' not in config:
-        logger.error('Please provide at least an error or valid target on the'
-                     'configuration file "%s" by adding errors_target and/or '
-                     'valid_target parameters.', config_loc)
+        log_error('Please provide at least an error or valid target on the'
+                  'configuration file "%s" by adding errors_target and/or '
+                  'valid_target parameters.', config_loc)
         return False
 
     # Output error message if there are missing parameters
     if len(missing_parameters) != 0:
         sep = ','
-        logger.error('Configuration parameter missing. Please',
-                     'set the [{0}] parameter in the configuration file "{1}"'.format(
-                         sep.join(missing_parameters, config_loc)))
+        log_error('Configuration parameter missing. Please set the [%s] parameter%s in the configuration file.',
+                  sep.join(missing_parameters), 's' if len(missing_parameters) > 1 else '')
         return False
 
     return True
 
 
 def main():
+    '''
+    Execution starts here
+    '''
     logger.debug('main')
     logger.info('\'target-typo-proxy:{}\' Starting...'.format(
         pkg_resources.get_distribution('target_typo_proxy').version))
