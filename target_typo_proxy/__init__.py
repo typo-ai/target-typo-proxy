@@ -161,8 +161,12 @@ def process_lines(config, records):
             # SCHEMA record is sent to all targets
             typo.output_to_all_targets(record)
         else:
-            log_critical('Unknown message type %s in message %s', input_record['type'], input_record)
-            sys.exit(1)
+            # UNKNOWN record type
+            # Maintain the order of the output messages, clear the current queue
+            # before continuing
+            if len(typo.data_out) > 0:
+                typo.process_batch()
+            typo.output_to_all_targets(record)
 
     if len(typo.data_out) != 0:
         typo.process_batch()
