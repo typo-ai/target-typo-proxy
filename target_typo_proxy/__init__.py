@@ -38,6 +38,7 @@ target-typo-proxy main module
 # 11, 20, 29
 
 import argparse
+from collections import defaultdict
 import io
 import sys
 import json
@@ -45,21 +46,16 @@ import threading
 import http.client
 import numbers
 import urllib
-from datetime import datetime
 import collections
 import pkg_resources
+from jsonschema.exceptions import ValidationError, SchemaError
 from jsonschema.validators import Draft4Validator
-import singer
 
-from target_typo_proxy.logging import log_error, log_info
+from target_typo_proxy.logging import log_critical, log_debug, log_info
 from target_typo_proxy.typo import TargetTypoProxy
 
 
-logger = singer.get_logger()
-
-# logger.setLevel(logging.DEBUG)
-
-# Type Constants
+# Message types
 TYPE_RECORD = 'RECORD'
 TYPE_STATE = 'STATE'
 TYPE_SCHEMA = 'SCHEMA'
@@ -70,7 +66,6 @@ def flatten(data_json, parent_key='', sep='__'):
     Flattening JSON nested file
     *Singer default template function
     '''
-    logger.debug('flatten - data_json=[%s], parent_key=[%s], sep=[%s]', data_json, parent_key, sep)
     items = []
     for json_object, json_value in data_json.items():
         new_key = parent_key + sep + json_object if parent_key else json_object
@@ -81,22 +76,14 @@ def flatten(data_json, parent_key='', sep='__'):
     return dict(items)
 
 
+# pylint: disable=too-many-statements,too-many-branches
 def process_lines(config, records):
-    logger.debug('process_lines - config=[%s], records=[%s]', config, records)
-    state = {'value': {}}
+    '''
+    Loops through stdin input and processes each message
+    '''
     schemas = {}
-    key_properties = {}
     validators = {}
-    proxied_key_properties = []
-    processed_streams = set()
-
-    def get_config_val(config, key):
-        val = config.get(key)
-
-        if isinstance(val, str):
-            return val.strip()
-
-        return val
+    processed_records = defaultdict(lambda: 0)
 
     # Typo Proxy Class
     typo = TargetTypoProxy(config)
@@ -108,12 +95,13 @@ def process_lines(config, records):
         try:
             input_record = json.loads(record)
         except json.decoder.JSONDecodeError:
-            logger.warn(f'Unable to parse: {record.rstrip()}')
-            continue
+            log_critical('Unable to parse record: %s', record)
+            sys.exit(1)
 
         if 'type' not in input_record:
-            raise Exception(
-                'Line is missing required key "type": {}'.format(record))
+            log_critical('Line is missing required key "type": %s', record)
+            sys.exit(1)
+
         input_type = input_record['type']
 
         if input_type == TYPE_RECORD:
@@ -121,9 +109,13 @@ def process_lines(config, records):
             if input_record['stream'] in validators:
                 try:
                     validators[input_record['stream']].validate(input_record['record'])
-                except Exception as err:
-                    logger.error(err)
+                except ValidationError as err:
+                    log_critical(err)
                     sys.exit(1)
+                except SchemaError as err:
+                    log_critical('Invalid schema: %s', err)
+
+            processed_records[input_record['stream']] += 1
 
             flattened_record = flatten(input_record['record'])
 
@@ -132,17 +124,6 @@ def process_lines(config, records):
                 line=flattened_record,
                 original_record=record
             )
-
-            # Outputting state for proxied key_properties
-            if input_record['stream'] in key_properties:
-                if len(key_properties[input_record['stream']]) != 0:
-                    key_json = {}
-                    for key in key_properties[input_record['stream']]:
-                        key_json[key] = input_record['record'][key]
-                    proxied_key_properties.append(key_json)
-
-            # Adding processed streams
-            processed_streams.add(input_record['stream'])
 
         elif input_type == TYPE_STATE:
             # Maintain the order of the output messages, clear the current queue
@@ -153,8 +134,8 @@ def process_lines(config, records):
 
         elif input_type == TYPE_SCHEMA:
             if 'stream' not in input_record:
-                raise Exception(
-                    'Line is missing required key "stream": {}'.format(record))
+                log_critical('Line is missing required key "stream": %s', record)
+                sys.exit(1)
 
             # Maintain the order of the output messages, clear the current queue
             # before continuing
@@ -164,46 +145,38 @@ def process_lines(config, records):
             stream = input_record['stream']
 
             # Validate if stream is processed
-            if stream in processed_streams:
-                logger.error(
-                    'Tap error. SCHEMA record should be specified before \
-                        RECORDS.')
+            if stream in processed_records.keys():
+                log_critical('SCHEMA message should arrive before any RECORD messages.')
                 sys.exit(1)
 
             # Validate schema
             try:
                 schemas[stream] = input_record['schema']
-
-            except Exception:
-                logger.error('Tap error: Schema is missing.')
+            except KeyError:
+                log_critical('Missing schema value in SCHEMA record: %s', input_record)
                 sys.exit(1)
 
             validators[stream] = Draft4Validator(input_record['schema'])
 
-            if 'key_properties' not in input_record:
-                raise Exception('key_properties field is required')
-
-            key_properties[stream] = input_record['key_properties']
-
             # SCHEMA record is sent to all targets
             typo.output_to_all_targets(record)
         else:
-            raise Exception('Unknown message type {} in message {}'
-                            .format(input_record['type'], input_record))
+            log_critical('Unknown message type %s in message %s', input_record['type'], input_record)
+            sys.exit(1)
 
     if len(typo.data_out) != 0:
         typo.process_batch()
 
-    log_info('Target Typo Proxy processing completed. %s total records proxied.', len(proxied_key_properties))
-    state['typo_proxied_records'] = proxied_key_properties
+    log_info('target-typo-proxy no longer receiving input. Processing completed.')
+
+    for stream_name, record_count in processed_records.items():
+        log_info('Processed stream %s with %s records.', stream_name, record_count)
 
 
 def send_usage_stats():
     '''
     Sends usage stats to Singer.io
     '''
-    logger.debug('send_usage_stats')
-
     try:
         version = pkg_resources.get_distribution('target-typo-proxy').version
         conn = http.client.HTTPConnection('collector.singer.io', timeout=10)
@@ -218,8 +191,9 @@ def send_usage_stats():
         conn.request('GET', '/i?' + urllib.parse.urlencode(params))
         conn.getresponse()
 
+    # pylint: disable=W0703
     except Exception:
-        logger.debug('Collection request failed', exc_info=True)
+        log_debug('Collection request failed', exc_info=True)
 
     finally:
         if conn:
@@ -248,28 +222,28 @@ def validate_config(config, config_loc):
         missing_parameters.append('send_threshold')
     else:
         if not isinstance(config['send_threshold'], numbers.Number):
-            log_error('Configuration file parameter "send_threshold" must be a number')
+            log_critical('Configuration file parameter "send_threshold" must be a number.')
             return False
 
-        if config['send_threshold'] < 0:
-            log_error('Configuration file parameter "send_threshold" must be a number')
+        if config['send_threshold'] < 1:
+            log_critical('Configuration file parameter "send_threshold" must be higher than 1.')
             return False
 
         if config['send_threshold'] > 100:
-            log_error('Configuration file parameter "send_threshold" must be lower than 100')
+            log_critical('Configuration file parameter "send_threshold" must be lower than 100.')
             return False
 
     if 'errors_target' not in config and 'valid_target' not in config:
-        log_error('Please provide at least an error or valid target on the'
-                  'configuration file "%s" by adding errors_target and/or '
-                  'valid_target parameters.', config_loc)
+        log_critical('Please provide at least an error or valid target on the'
+                     'configuration file "%s" by adding errors_target and/or '
+                     'valid_target parameters.', config_loc)
         return False
 
     # Output error message if there are missing parameters
     if len(missing_parameters) != 0:
         sep = ','
-        log_error('Configuration parameter missing. Please set the [%s] parameter%s in the configuration file.',
-                  sep.join(missing_parameters), 's' if len(missing_parameters) > 1 else '')
+        log_critical('Configuration parameter missing. Please set the [%s] parameter%s in the configuration file.',
+                     sep.join(missing_parameters), 's' if len(missing_parameters) > 1 else '')
         return False
 
     return True
@@ -279,48 +253,43 @@ def main():
     '''
     Execution starts here
     '''
-    logger.debug('main')
-    logger.info('\'target-typo-proxy:{}\' Starting...'.format(
-        pkg_resources.get_distribution('target_typo_proxy').version))
+    log_info('Starting...')
     parser = argparse.ArgumentParser()
     parser.add_argument('-c', '--config', help='Config file')
     args = parser.parse_args()
 
     if args.config:
-        with open(args.config) as input:
-            config = json.load(input)
-            logger.info(
-                'Target configuration file {} loaded.'.format(args.config))
+        with open(args.config) as config_file:
+            config = json.load(config_file)
+            log_info('Configuration file {} loaded.'.format(args.config))
     else:
-        logger.error('Please specify configuration file.')
+        log_critical('Please specify configuration file.')
         sys.exit(1)
 
     # Validate configuration for required parameters
     config_validation = validate_config(config, args.config)
 
     if not config_validation:
-        logger.info('Configuration errors found. Target exiting.')
-        return
+        sys.exit(1)
 
     if not config.get('disable_collection', False):
-        logger.info(
-            'Sending version information to singer.io.',
-            'To disable sending anonymous usage data, set',
-            'the config parameter "disable_collection" to true')
+        log_info('Sending version information to singer.io. To disable sending anonymous usage data, set' +
+                 'the config parameter "disable_collection" to true')
 
         threading.Thread(target=send_usage_stats).start()
 
-    input = io.TextIOWrapper(sys.stdin.buffer, encoding='utf-8')
+    stdin_input = io.TextIOWrapper(sys.stdin.buffer, encoding='utf-8')
 
-    process_lines(config, input)
+    process_lines(config, stdin_input)
 
-    logger.info('Target exiting normally')
+    log_info('Exiting normally.')
 
 
 if __name__ == '__main__':
     try:
         main()
+    # pylint: disable=W0703
     except Exception as err:
-        logger.error('Target-typo cannot be executed at the moment. \
-            Please try again later. Details: {}'.format(err))
+        log_critical('Target-typo cannot be executed at the moment. ' +
+                     'Please try again later. Details: %s', err)
         sys.exit(1)
