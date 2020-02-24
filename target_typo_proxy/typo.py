@@ -45,13 +45,11 @@ import sys
 from threading import Thread
 from urllib.parse import urlparse
 
+import backoff
 import requests
-import singer
 
-from target_typo_proxy.logging import log_debug, log_error, log_info
+from target_typo_proxy.logging import log_backoff, log_critical, log_debug, log_info
 
-# Singer Logger
-logger = singer.get_logger()
 
 ERROR = 'ERROR'
 PASSTHROUGH = 'PASSTHROUGH'
@@ -70,6 +68,15 @@ def enqueue_output(out, queue):
     for line in iter(out.readline, b''):
         queue.put(line.decode('utf-8'))
     out.close()
+
+
+# pylint: disable=unused-argument
+def backoff_giveup(exception):
+    '''
+    Called when backoff exhausts max tries
+    '''
+    log_critical('Unable to make network requests. Please check your internet connection.')
+    sys.exit(1)
 
 
 class TargetTypoProxy():
@@ -238,47 +245,40 @@ class TargetTypoProxy():
                 except Empty:
                     break
 
-        error_output += 'Terminating target-typo-proxy'
-        logger.error(error_output)
-
-        # Exit with error
+        error_output += 'Terminating target-typo-proxy.'
+        log_critical(error_output)
         sys.exit(1)
 
+    # pylint: disable=no-self-use
+    @backoff.on_exception(
+        backoff.expo,
+        (requests.exceptions.Timeout, requests.exceptions.ConnectionError),
+        max_tries=8,
+        on_backoff=log_backoff,
+        on_giveup=backoff_giveup,
+        logger=None,
+        factor=3
+    )
     def post_request(self, url, headers, payload):
         '''
         Generic POST request
         '''
+        response = requests.post(url, headers=headers, data=json.dumps(payload), timeout=60)
 
-        logger.debug('post_request - self=[%s], url=[%s], headers=[%s], payload=[%s]',
-                     self, url, headers, payload)
-
-        try:
-            response = requests.post(url, headers=headers, data=json.dumps(payload))
-            logger.debug('post_request - r.text=[%s], data=[%s]', response.text, json.dumps(payload))
-
-        except Exception as e:
-            logger.error('post_request - Request failed.')
-            logger.error(e)
-            sys.exit(1)
-
-        logger.debug('post_request - url=[%s], request.status_code=[%s]', url, response.status_code)
         status = response.status_code
 
         if status == 200:
             data = response.json()
             return status, data
 
-        logger.error('post_request - url=[%s], request.status_code=[%s], response.text=[%s]',
-                     url, response.status_code, response.text)
-        raise Exception('url {} returned status code {}. Please \
-                        check that you are using the correct url.'.format(url, response.status_code))
+        log_critical('URL %s returned status code %s. Please check that you are using the correct url.',
+                     url, response.status_code)
+        sys.exit(1)
 
     def request_token(self):
         '''
         Token Request for other requests
         '''
-        logger.debug('request_token - self=[%s]', self)
-
         # Required parameters
         url = self.base_url.rstrip('/') + '/token'
         headers = {
@@ -290,15 +290,11 @@ class TargetTypoProxy():
         }
 
         # POST request
-        try:
-            status, data = self.post_request(url, headers, payload)
-        except Exception:
-            log_error('Please validate your configuration inputs.', exc_info=True)
-            sys.exit(1)
+        status, data = self.post_request(url, headers, payload)
 
         # Check Status
         if status != 200:
-            log_error('Token Request Failed. Please check your credentials. Details: %s', data)
+            log_critical('Token Request Failed. Please check your credentials. Details: %s', data)
             sys.exit(1)
 
         return data['token']
@@ -344,7 +340,7 @@ class TargetTypoProxy():
         batch = self.data_out
         self.data_out = []
 
-        log_info('Batch %s: Sending %s records to Typo.', self.batch_number, len(batch))
+        log_info('Batch %s: Validating %s records with Typo.', self.batch_number, len(batch))
 
         # Required parameters
         url = self.cluster_url + '/predict-batch'
@@ -372,7 +368,7 @@ class TargetTypoProxy():
         # Check Status
         good_status = [200, 201, 202]
         if status not in good_status:
-            log_error('Request failed. Please try again later. %s', data['message'])
+            log_critical('Request failed. Please try again later. %s', data['message'])
             sys.exit(1)
 
         errors_count = 0
@@ -391,5 +387,11 @@ class TargetTypoProxy():
                 if self.output_targets[ERROR]:
                     self.output_to_subprocess_target(ERROR, batch[index]['original_record'])
 
-        log_info('Batch %s: Detected %s error records and %s valid records.',
-                 self.batch_number, errors_count, valid_count)
+        if errors_count > 0 and self.output_targets[ERROR]:
+            log_info('Batch %s: Sending %s records to ERROR target.', self.batch_number, errors_count)
+
+        if valid_count > 0 and self.output_targets[VALID]:
+            log_info('Batch %s: Sending %s records to VALID target.', self.batch_number, valid_count)
+
+        if self.output_targets[PASSTHROUGH]:
+            log_info('Batch %s: Sending %s records to PASSTHROUGH target.', self.batch_number, valid_count)

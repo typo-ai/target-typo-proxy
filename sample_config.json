@@ -4,7 +4,7 @@
   "api_secret": "my_apisecret",
   "cluster_api_endpoint": "https://cluster.typo.ai/management/api/v1",
   "repository": "my_repository",
-  "send_threshold": 250,
+  "send_threshold": 100,
   "errors_target": "",
   "valid_target": "",
   "passthrough_target": ""
