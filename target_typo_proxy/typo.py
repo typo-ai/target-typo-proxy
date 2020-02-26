@@ -413,6 +413,12 @@ class TargetTypoProxy():
             status, data = self.post_request(url, headers, post_data)
 
         # Check Status
+        if status == 503 and 'code' in data and data['code'] == 'MAX_RETRIES_EXCEEDED':
+            number_failed = len(data['data'])
+            log_critical('Typo reached an internal timeout when evaluating %s record%s in a data batch.',
+                         number_failed, 's' if number_failed > 1 else '')
+            sys.exit(1)
+
         good_status = [200, 201, 202]
         if status not in good_status:
             log_critical('Request failed. Please try again later. %s', data['message'])
