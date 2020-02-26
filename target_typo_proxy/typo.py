@@ -95,7 +95,7 @@ class TargetTypoProxy():
         endpoint_url_parts = urlparse(self.base_url)
         self.cluster_url = '{}://{}'.format(endpoint_url_parts.scheme, endpoint_url_parts.netloc)
         self.repository = config['repository']
-        self.send_threshold = config['send_threshold'] if 'send_threshold' in config else 100
+        self.send_threshold = config['send_threshold'] if 'send_threshold' in config else 50
         self.record_timeout = config['record_timeout'] if 'record_timeout' in config else None
         self.fail_on_partial_results = (
             config['fail_on_partial_results'] if 'fail_on_partial_results' in config else True)
