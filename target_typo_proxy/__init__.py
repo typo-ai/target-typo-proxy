@@ -155,6 +155,22 @@ def send_usage_stats():
             conn.close()
 
 
+def validate_number_value(parameter_name, value, min_value, max_value):
+    if not isinstance(value, numbers.Number):
+        log_critical('Configuration file parameter "{}" must be a number.'.format(parameter_name))
+        return False
+
+    if value < min_value:
+        log_critical('Configuration file parameter "{}" must be higher than {}.'.format(parameter_name, min_value))
+        return False
+
+    if value > max_value:
+        log_critical('Configuration file parameter "{}" must be lower than or equal to {}.'.format(parameter_name, max_value))
+        return False
+
+    return True
+
+
 def validate_config(config, config_loc):
     '''
     Validates the provided configuration file
@@ -173,19 +189,9 @@ def validate_config(config, config_loc):
     if 'repository' not in config:
         missing_parameters.append('repository')
 
-    if 'send_threshold' not in config:
-        missing_parameters.append('send_threshold')
-    else:
-        if not isinstance(config['send_threshold'], numbers.Number):
-            log_critical('Configuration file parameter "send_threshold" must be a number.')
-            return False
-
-        if config['send_threshold'] < 1:
-            log_critical('Configuration file parameter "send_threshold" must be higher than 1.')
-            return False
-
-        if config['send_threshold'] > 100:
-            log_critical('Configuration file parameter "send_threshold" must be lower than 100.')
+    # Optional parameters
+    if 'send_threshold' in config:
+        if not validate_number_value('send_threshold', config['send_threshold'], 1, 100):
             return False
 
     if 'errors_target' not in config and 'valid_target' not in config:
@@ -193,6 +199,19 @@ def validate_config(config, config_loc):
                      'configuration file "%s" by adding errors_target and/or '
                      'valid_target parameters.', config_loc)
         return False
+
+    if 'record_timeout' in config:
+        if not validate_number_value('send_threshold', config['send_threshold'], 0, 100):
+            return False
+
+    if 'fail_on_partial_results' in config:
+        if not isinstance(config['fail_on_partial_results'], bool):
+            log_critical('fail_on_partial_results must be a boolean value')
+            return False
+
+    if 'record_timeout' in config:
+        if not validate_number_value('record_timeout', config['record_timeout'], 0, 10):
+            return False
 
     # Output error message if there are missing parameters
     if len(missing_parameters) != 0:
