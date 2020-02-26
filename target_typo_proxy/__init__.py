@@ -1,6 +1,4 @@
-'''
-target-typo-proxy main module
-'''
+#!/usr/bin/env python3
 # Copyright 2019-2020 Typo. All Rights Reserved.
 #
 #
@@ -34,8 +32,6 @@ target-typo-proxy main module
 # This product includes software developed at
 #
 # or by Typo (https://www.typo.ai/).
-# !/usr/bin/env python3
-# 11, 20, 29
 
 import argparse
 from collections import defaultdict
@@ -46,38 +42,18 @@ import threading
 import http.client
 import numbers
 import urllib
-import collections
 import pkg_resources
+
 from jsonschema.exceptions import ValidationError, SchemaError
 from jsonschema.validators import Draft4Validator
 
+from target_typo_proxy.constants import TYPE_RECORD, TYPE_SCHEMA, TYPE_STATE
 from target_typo_proxy.logging import log_critical, log_debug, log_info
 from target_typo_proxy.typo import TargetTypoProxy
 
 
-# Message types
-TYPE_RECORD = 'RECORD'
-TYPE_STATE = 'STATE'
-TYPE_SCHEMA = 'SCHEMA'
-
-
-def flatten(data_json, parent_key='', sep='__'):
-    '''
-    Flattening JSON nested file
-    *Singer default template function
-    '''
-    items = []
-    for json_object, json_value in data_json.items():
-        new_key = parent_key + sep + json_object if parent_key else json_object
-        if isinstance(json_value, collections.MutableMapping):
-            items.extend(flatten(json_value, new_key, sep=sep).items())
-        else:
-            items.append((new_key, str(json_value) if isinstance(json_value, list) else json_value))
-    return dict(items)
-
-
 # pylint: disable=too-many-statements,too-many-branches
-def process_lines(config, records):
+def process_lines(config, messages):
     '''
     Loops through stdin input and processes each message
     '''
@@ -91,85 +67,60 @@ def process_lines(config, records):
     typo.token = typo.request_token()
 
     # Loop over records from stdin
-    for record in records:
+    for raw_message in messages:
         try:
-            input_record = json.loads(record)
+            message = json.loads(raw_message)
         except json.decoder.JSONDecodeError:
-            log_critical('Unable to parse record: %s', record)
+            log_critical('Unable to parse message: %s', raw_message)
             sys.exit(1)
 
-        if 'type' not in input_record:
-            log_critical('Line is missing required key "type": %s', record)
+        if 'type' not in message:
+            log_critical('Line is missing required key "type": %s', message)
             sys.exit(1)
 
-        input_type = input_record['type']
+        message_type = message['type']
 
-        if input_type == TYPE_RECORD:
-            # Validate record
-            if input_record['stream'] in validators:
+        if message_type == TYPE_RECORD:
+            # Validate Record
+            if message['stream'] in validators:
                 try:
-                    validators[input_record['stream']].validate(input_record['record'])
+                    validators[message['stream']].validate(message['record'])
                 except ValidationError as err:
                     log_critical(err)
                     sys.exit(1)
                 except SchemaError as err:
                     log_critical('Invalid schema: %s', err)
+                    sys.exit(1)
 
-            processed_records[input_record['stream']] += 1
-
-            flattened_record = flatten(input_record['record'])
-
-            typo.queue_for_processing(
-                dataset=input_record['stream'],
-                line=flattened_record,
-                original_record=record
-            )
-
-        elif input_type == TYPE_STATE:
-            # Maintain the order of the output messages, clear the current queue
-            # before continuing
-            if len(typo.data_out) > 0:
-                typo.process_batch()
-            typo.output_to_all_targets(record)
-
-        elif input_type == TYPE_SCHEMA:
-            if 'stream' not in input_record:
-                log_critical('Line is missing required key "stream": %s', record)
+        elif message_type == TYPE_SCHEMA:
+            # Validate Schema
+            if 'stream' not in message:
+                log_critical('Line is missing required key "stream": %s', raw_message)
                 sys.exit(1)
 
-            # Maintain the order of the output messages, clear the current queue
-            # before continuing
-            if len(typo.data_out) > 0:
-                typo.process_batch()
-
-            stream = input_record['stream']
+            stream = message['stream']
 
             # Validate if stream is processed
             if stream in processed_records.keys():
                 log_critical('SCHEMA message should arrive before any RECORD messages.')
                 sys.exit(1)
 
-            # Validate schema
             try:
-                schemas[stream] = input_record['schema']
+                schemas[stream] = message['schema']
             except KeyError:
-                log_critical('Missing schema value in SCHEMA record: %s', input_record)
+                log_critical('Missing schema value in SCHEMA record: %s', message)
                 sys.exit(1)
 
-            validators[stream] = Draft4Validator(input_record['schema'])
+            validators[stream] = Draft4Validator(message['schema'])
 
-            # SCHEMA record is sent to all targets
-            typo.output_to_all_targets(record)
-        else:
-            # UNKNOWN record type
-            # Maintain the order of the output messages, clear the current queue
-            # before continuing
-            if len(typo.data_out) > 0:
-                typo.process_batch()
-            typo.output_to_all_targets(record)
+        # Enqueue every message for processing
+        typo.enqueue_message({
+            'raw_message': raw_message,
+            'message': message
+        })
 
-    if len(typo.data_out) != 0:
-        typo.process_batch()
+    if len(typo.message_queue) != 0:
+        typo.process_buffer()
 
     log_info('target-typo-proxy no longer receiving input. Processing completed.')
 

@@ -1,7 +1,4 @@
-'''
-TargetTypoProxy class handling all core functionality
-'''
-# Copyright 2019 Typo. All Rights Reserved.
+# Copyright 2019-2020 Typo. All Rights Reserved.
 #
 #
 #
@@ -36,6 +33,7 @@ TargetTypoProxy class handling all core functionality
 # or by Typo (https://www.typo.ai/).
 
 
+from collections import defaultdict, deque
 import json
 import os
 from queue import Queue, Empty
@@ -48,7 +46,9 @@ from urllib.parse import urlparse
 import backoff
 import requests
 
+from target_typo_proxy.constants import TYPE_RECORD
 from target_typo_proxy.logging import log_backoff, log_critical, log_debug, log_info
+from target_typo_proxy.utils import flatten
 
 
 ERROR = 'ERROR'
@@ -105,6 +105,12 @@ class TargetTypoProxy():
 
         self.send_threshold = int(config['send_threshold'])
         self.batch_number = 0
+
+        self.record_buffer_sizes = defaultdict(lambda: 0)
+        self.message_queue = []
+        self.validators = {}
+
+        self.current_stream = None
 
         def is_none_or_empty(val):
             return val is None or val == ''
@@ -299,46 +305,75 @@ class TargetTypoProxy():
 
         return data['token']
 
-    def queue_for_processing(self, dataset, line, original_record):
+    def enqueue_message(self, message_data):
+        message = message_data['message']
+
+        self.message_queue.append(message_data)
+
+        if message['type'] == TYPE_RECORD:
+            self.record_buffer_sizes[message['type']] += 1
+
+            if self.record_buffer_sizes[message['type']] == self.send_threshold:
+                self.process_buffer()
+
+    def process_buffer(self):
         '''
-        Constructing record data payload for POST Request
+        Processes the whole buffer, generates one batch per stream and outputs
+        the results to the respective subprocesses.
         '''
-        data = {
-            'typo_data': {
-                'apikey': self.repository,
-                'url': dataset,
-                'data': line
-            },
-            'original_record': original_record
-        }
+        batches = defaultdict(list)
+        results = {}
 
-        # Submit a batch once we reach the record threshold or if dataset changes
-        # The previous batch is actually submitted and the current record is added
-        # to the next batch (new)
-        if ((len(self.data_out) == self.send_threshold)
-                or (self.current_dataset and self.current_dataset != dataset)):
-            self.current_dataset = dataset
-            self.process_batch()
+        for message in self.message_queue:
+            if message['message']['type'] == TYPE_RECORD:
+                batches[message['message']['stream']].append(message)
 
-        self.data_out.append(data)
+        for stream, batch in batches.items():
+            results[stream] = deque(self.process_batch(stream, batch))
 
-        if not self.current_dataset:
-            self.current_dataset = dataset
+        errors_count = 0
+        valid_count = 0
 
-        return data
+        for message in self.message_queue:
+            if message['message']['type'] == TYPE_RECORD:
+                result = results[message['message']['stream']].popleft()
 
-    def process_batch(self):
+                if self.output_targets[PASSTHROUGH]:
+                    self.output_to_subprocess_target(PASSTHROUGH, message['raw_message'])
+
+                if result['status'] == 'OK':
+                    valid_count += 1
+                    if self.output_targets[VALID]:
+                        self.output_to_subprocess_target(VALID, message['raw_message'])
+                else:
+                    errors_count += 1
+                    if self.output_targets[ERROR]:
+                        self.output_to_subprocess_target(ERROR, message['raw_message'])
+            else:
+                self.output_to_all_targets(message['raw_message'])
+
+        if errors_count > 0 and self.output_targets[ERROR]:
+            log_info('Batch %s: Sending %s records to ERROR target.', self.batch_number, errors_count)
+
+        if valid_count > 0 and self.output_targets[VALID]:
+            log_info('Batch %s: Sending %s records to VALID target.', self.batch_number, valid_count)
+
+        if self.output_targets[PASSTHROUGH]:
+            log_info('Batch %s: Sending %s records to PASSTHROUGH target.', self.batch_number, valid_count)
+
+        # Reset message queue
+        self.message_queue = []
+
+        # Clear the per-stream buffer size counter
+        for key in self.record_buffer_sizes.keys():
+            self.record_buffer_sizes[key] = 0
+
+    def process_batch(self, stream, batch):
         '''
-        Validate data with Typo in batch via POST Request to /predict-batch and push to
-        corresponding output target.
+        Validate data with Typo for one batch, corresponding to a single dataset (stream).
+        Executes POST Request to /predict-batch and pushes to corresponding output target.
         '''
-        if len(self.data_out) == 0:
-            return
-
         self.batch_number += 1
-
-        batch = self.data_out
-        self.data_out = []
 
         log_info('Batch %s: Validating %s records with Typo.', self.batch_number, len(batch))
 
@@ -350,9 +385,9 @@ class TargetTypoProxy():
         }
 
         post_data = {
-            'apikey': batch[0]['typo_data']['apikey'],
-            'url': batch[0]['typo_data']['url'],
-            'data': [record['typo_data']['data'] for record in batch]
+            'apikey': self.repository,
+            'url': stream,  # URL (dataset) is stream name
+            'data': [flatten(message['message']['record']) for message in batch]
         }
 
         status, data = self.post_request(url, headers, post_data)
@@ -371,27 +406,4 @@ class TargetTypoProxy():
             log_critical('Request failed. Please try again later. %s', data['message'])
             sys.exit(1)
 
-        errors_count = 0
-        valid_count = 0
-
-        for index, result in enumerate(data['data']):
-            if self.output_targets[PASSTHROUGH]:
-                self.output_to_subprocess_target(PASSTHROUGH, batch[index]['original_record'])
-
-            if result['status'] == 'OK':
-                valid_count += 1
-                if self.output_targets[VALID]:
-                    self.output_to_subprocess_target(VALID, batch[index]['original_record'])
-            else:
-                errors_count += 1
-                if self.output_targets[ERROR]:
-                    self.output_to_subprocess_target(ERROR, batch[index]['original_record'])
-
-        if errors_count > 0 and self.output_targets[ERROR]:
-            log_info('Batch %s: Sending %s records to ERROR target.', self.batch_number, errors_count)
-
-        if valid_count > 0 and self.output_targets[VALID]:
-            log_info('Batch %s: Sending %s records to VALID target.', self.batch_number, valid_count)
-
-        if self.output_targets[PASSTHROUGH]:
-            log_info('Batch %s: Sending %s records to PASSTHROUGH target.', self.batch_number, valid_count)
+        return data['data']
