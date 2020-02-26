@@ -95,6 +95,11 @@ class TargetTypoProxy():
         endpoint_url_parts = urlparse(self.base_url)
         self.cluster_url = '{}://{}'.format(endpoint_url_parts.scheme, endpoint_url_parts.netloc)
         self.repository = config['repository']
+        self.send_threshold = config['send_threshold'] if 'send_threshold' in config else 100
+        self.record_timeout = config['record_timeout'] if 'record_timeout' in config else None
+        self.fail_on_partial_results = (
+            config['fail_on_partial_results'] if 'fail_on_partial_results' in config else True)
+        self.retry_times = config['retry_times'] if 'retry_times' in config else None
 
         self.retry_bool = False
         self.token = ''
@@ -387,8 +392,15 @@ class TargetTypoProxy():
         post_data = {
             'apikey': self.repository,
             'url': stream,  # URL (dataset) is stream name
-            'data': [flatten(message['message']['record']) for message in batch]
+            'data': [flatten(message['message']['record']) for message in batch],
+            'fail_on_partial_results': self.fail_on_partial_results
         }
+
+        if self.record_timeout is not None:
+            post_data['record_timeout'] = self.record_timeout
+
+        if self.retry_times is not None:
+            post_data['retry_times'] = self.retry_times
 
         status, data = self.post_request(url, headers, post_data)
 
