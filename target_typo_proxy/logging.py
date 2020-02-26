@@ -1,7 +1,4 @@
-'''
-Logging utilities
-'''
-# Copyright 2019-2020 Typo
+# Copyright 2019-2020 Typo. All Rights Reserved.
 #
 #
 #
