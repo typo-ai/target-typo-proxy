@@ -17,9 +17,11 @@
 
 This section describes the basic usage of **target-typo-proxy**. It assumes that you already have a Typo account, with an existing repository and a dataset. If you do not meet these prerequisites, please go to [Typo Registration and Setup](#typo-registration-and-setup).
 
+
+
 ### Installation
 
-xtracting Python 3 is required. It is recommended to create a separate virtual environment for each tap or target as their may be incompatibilities between dependency versions.
+Python 3 is required. It is recommended to create a separate virtual environment for each tap or target as their may be incompatibilities between dependency versions.
 ```bash
 pip install target-typo-proxy
 ```
@@ -49,7 +51,7 @@ The following sample configuration can be used as a starting point:
 - **errors_target** - The command for the target that will receive records predicted as error.
 - **valid_target** - The command for the target that will receive records predicted as valid. At least one of errors_target and valid_target must be provided (not necessarily both).
 - **passthrough_target** - (optional) The command for the target that will receive all records.
-- Additionaly, some optional parameters can be provided:
+- Additionally, some optional parameters can be provided:
   - **record_timeout**: integer value specifying the maximum evaluation time per record. Default: `1`. 
   - **fail_on_partial_results**: if false, and the per-record timeout is reached, Typo will still return partial results, otherwise it will fail the whole batch. Default: `true`.
   - **retry_times**: number of retries in case a per-record timeout is reached. Default: `4`.
@@ -61,7 +63,7 @@ The following sample configuration can be used as a starting point:
 ### Run target-typo-proxy
 
 ```bash
-> TAP-some-api | target-typo-proxy -c config.json
+> example-tap -c example_tap_config.json | target-typo-proxy -c config.json
 ```
 
 Target-typo-proxy will execute the targets specified in the configuration file as subprocesses.
@@ -113,22 +115,16 @@ pip install -e .
 You may reach Typo Support at the email address support@ followed by the typo domain or see the full contact information at [https://www.typo.ai](https://www.typo.ai?utm_source=github&utm_medium=target-typo-proxy)
 
 
+
 ---
 
 Copyright 2019-2020 Typo. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the
-License.
+Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with the License.
 
-You may obtain a copy of the License at
-http://www.apache.org/licenses/LICENSE-2.0
+You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
 
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
-implied. See the License for the specific language governing
-permissions and limitations under the License.
+Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+implied. See the License for the specific language governing permissions and limitations under the License.
 
-This product includes software developed at
-or by Typo ([https://www.typo.ai](https://www.typo.ai?utm_source=github&utm_medium=target-typo-proxy)).
+This product includes software developed at or by Typo ([https://www.typo.ai](https://www.typo.ai?utm_source=github&utm_medium=target-typo-proxy)).
