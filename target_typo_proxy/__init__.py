@@ -1,37 +1,21 @@
 #!/usr/bin/env python3
+
 # Copyright 2019-2020 Typo. All Rights Reserved.
 #
-#
-#
 # Licensed under the Apache License, Version 2.0 (the "License");
-#
-# you may not use this file except in compliance with the
-#
-# License.
-#
-#
+# you may not use this file except in compliance with the License.
 #
 # You may obtain a copy of the License at
-#
 # http://www.apache.org/licenses/LICENSE-2.0
 #
-#
-#
 # Unless required by applicable law or agreed to in writing, software
-#
 # distributed under the License is distributed on an "AS IS" BASIS,
-#
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
-#
 # implied. See the License for the specific language governing
-#
 # permissions and limitations under the License.
 #
-#
-#
-# This product includes software developed at
-#
-# or by Typo (https://www.typo.ai/).
+# This product includes software developed at or by Typo (https://www.typo.ai/).
+
 
 import argparse
 from collections import defaultdict
@@ -47,12 +31,11 @@ import pkg_resources
 from jsonschema.exceptions import ValidationError, SchemaError
 from jsonschema.validators import Draft4Validator
 
-from target_typo_proxy.constants import TYPE_RECORD, TYPE_SCHEMA, TYPE_STATE
+from target_typo_proxy.constants import TYPE_RECORD, TYPE_SCHEMA
 from target_typo_proxy.logging import log_critical, log_debug, log_info
 from target_typo_proxy.typo import TargetTypoProxy
 
 
-# pylint: disable=too-many-statements,too-many-branches
 def process_lines(config, messages):
     '''
     Loops through stdin input and processes each message
@@ -155,17 +138,21 @@ def send_usage_stats():
             conn.close()
 
 
-def validate_number_value(parameter_name, value, min_value, max_value):
+def validate_number_value(parameter_name, value, min_value, max_value, validate_int=False):
     if not isinstance(value, numbers.Number):
-        log_critical('Configuration file parameter "{}" must be a number.'.format(parameter_name))
+        log_critical('Configuration file parameter "%s" must be a number.', parameter_name)
+        return False
+
+    if validate_int and not isinstance(value, int):
+        log_critical('Configuration file parameter "%s" must be an integer number.', parameter_name)
         return False
 
     if value < min_value:
-        log_critical('Configuration file parameter "{}" must be higher than {}.'.format(parameter_name, min_value))
+        log_critical('Configuration file parameter "%s" must be higher than %s.', parameter_name, min_value)
         return False
 
     if value > max_value:
-        log_critical('Configuration file parameter "{}" must be lower than or equal to {}.'.format(parameter_name, max_value))
+        log_critical('Configuration file parameter "%s" must be lower than or equal to %s.', parameter_name, max_value)
         return False
 
     return True
@@ -191,7 +178,7 @@ def validate_config(config, config_loc):
 
     # Optional parameters
     if 'send_threshold' in config:
-        if not validate_number_value('send_threshold', config['send_threshold'], 1, 100):
+        if not validate_number_value('send_threshold', config['send_threshold'], 1, 100, True):
             return False
 
     if 'errors_target' not in config and 'valid_target' not in config:
@@ -214,7 +201,7 @@ def validate_config(config, config_loc):
             return False
 
     # Output error message if there are missing parameters
-    if len(missing_parameters) != 0:
+    if missing_parameters:
         sep = ','
         log_critical('Configuration parameter missing. Please set the [%s] parameter%s in the configuration file.',
                      sep.join(missing_parameters), 's' if len(missing_parameters) > 1 else '')
@@ -264,6 +251,6 @@ if __name__ == '__main__':
         main()
     # pylint: disable=W0703
     except Exception as err:
-        log_critical('Target-typo cannot be executed at the moment. ' +
-                     'Please try again later. Details: %s', err)
+        log_critical(
+            'Target-typo cannot be executed at the moment. Please try again later. Details: %s', err)
         sys.exit(1)
