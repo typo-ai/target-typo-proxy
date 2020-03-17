@@ -1,3 +1,5 @@
+[![CircleCI](https://circleci.com/gh/typo-ai/target-typo-proxy.svg?style=shield)](https://circleci.com/gh/typo-ai/target-typo-proxy)
+
 # target-typo-proxy
 
 [Singer](https://singer.io) target that intercepts data traveling between a tap and target in order to provide data quality checking with [Typo](https://www.typo.ai/?utm_source=github&utm_medium=target-typo-proxy). Records received will be forwarded to Typo, and depending on the results returned, **target-typo-proxy** forwards the record to a valid or error target. An optional passthrough target receives all records regardless of Typo results.
