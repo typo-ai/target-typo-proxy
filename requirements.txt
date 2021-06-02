@@ -11,4 +11,4 @@ simplejson==3.11.1
 singer-python==5.9.0
 six==1.14.0
 -e git+https://github.com/typo-ai/target-typo-proxy@76ddc464189c028da3b8636e44f4162d10c5d738#egg=target_typo_proxy
-urllib3==1.25.8
+urllib3==1.26.5
